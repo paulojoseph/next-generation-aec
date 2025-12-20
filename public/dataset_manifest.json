@@ -1,0 +1,9 @@
+{
+  "Area_1": [
+    {
+      "name": "conferenceRoom_1",
+      "file": "Area_1_conferenceRoom_1.ply",
+      "objects": "Area_1_conferenceRoom_1_objects.json"
+    }
+  ]
+}
