@@ -2,21 +2,40 @@
 
 **Browser-Native Digital Twin Platform for Massive LiDAR Point Clouds**
 
-[![Next.js](https://img.shields.io/badge/Next.js-15-black?style=flat-square&logo=next.js)](https://nextjs.org/)
-[![Three.js](https://img.shields.io/badge/Three.js-R3F-61DAFB?style=flat-square&logo=threedotjs)](https://threejs.org/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-Strict-3178C6?style=flat-square&logo=typescript)](https://www.typescriptlang.org/)
-[![Test Coverage](https://img.shields.io/badge/Coverage-85%25-brightgreen?style=flat-square)](./vitest.config.ts)
-[![Performance](https://img.shields.io/badge/60fps-1M+_Points-00C853?style=flat-square)](#performance-characteristics)
+<div align="center">
+
+[![Next.js](https://img.shields.io/badge/Next.js-16_Turbopack-black?style=for-the-badge&logo=next.js)](https://nextjs.org/)
+[![Three.js](https://img.shields.io/badge/Three.js-R3F-white?style=for-the-badge&logo=three.js)](https://threejs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-Strict-blue?style=for-the-badge&logo=typescript)](https://www.typescriptlang.org/)
+[![Coverage](https://img.shields.io/badge/Vitest-85%25_Coverage-green?style=for-the-badge&logo=vitest)](./vitest.config.ts)
+
+<br />
+
+[**🚀 Launch Live Demo**](https://next-generation-aec.vercel.app/)
+&nbsp;&nbsp;•&nbsp;&nbsp;
+[**🎥 Watch Architecture Walkthrough**](https://www.youtube.com/watch?v=i-iUzpONJGY)
+
+</div>
 
 ---
 
 ## Executive Summary
 
-**NextGen AEC** delivers enterprise-grade LiDAR visualization directly in the browser, eliminating the need for expensive GPU servers or proprietary desktop software. By pushing all rendering to the client GPU, we achieve infinite horizontal scale at the cost of static file hosting.
+**NextGen AEC** is a technical proof-of-concept designed to demonstrate the architectural maturity required for a **Founding Engineer** role. It delivers enterprise-grade LiDAR visualization directly in the browser, **solving the technically demanding challenge of real-time visualization of large LiDAR datasets** without expensive GPU servers or proprietary desktop software.
 
-```
-Traditional Pipeline:  S3 → GPU Server ($$$) → Compressed Stream → Browser
-NextGen Architecture:  S3 → Edge CDN → Raw Binary → Client GPU (FREE)
+```mermaid
+flowchart LR
+    subgraph Legacy ["🛑 Legacy Stack"]
+        L1[LiDAR] --> L2[Desktop SW] --> L3[GPU Server<br/>💰 $$$] --> L4[Browser]
+    end
+
+    subgraph NextGen ["🚀 NextGen AEC"]
+        N1[LiDAR] --> N2[Python ETL] --> N3[S3 + CDN] --> N4[WebGL<br/>60 FPS]
+    end
+
+    style L3 fill:#dc2626,stroke:#991b1b,color:#fff
+    style N3 fill:#0ea5e9,stroke:#0284c7,color:#fff
+    style N4 fill:#10b981,stroke:#059669,color:#fff
 ```
 
 **Key Business Impact:**
@@ -31,53 +50,77 @@ NextGen Architecture:  S3 → Edge CDN → Raw Binary → Client GPU (FREE)
 
 ### System Design Philosophy
 
-This codebase follows a **Documentation-First, SOLID-Compliant** architecture designed for:
+This codebase establishes the technical foundation for the platform, reflecting a mindset that cares about long-term maintainability as much as shipping fast. The architecture was specifically designed to solve technically demanding challenges like real-time visualization of large LiDAR datasets.
 
-1. **Decoupled Rendering** — Three.js engine operates independently of React lifecycle
-2. **Cloud-Agnostic Data Layer** — Seamless S3/local switching via environment configuration
-3. **Design System Foundation** — Scalable UI component library with tokenized theming
-4. **Event-Driven State** — Observer pattern for engine-to-UI communication
+- **Decoupled Rendering** — Three.js engine operates independently of React lifecycle, ensuring performance despite complex UI state.
+- **Cloud-Agnostic Data Layer** — Designed to navigate ambiguity, allowing seamless switching between local development and S3 production.
+- **Design System Foundation** — A scalable framework for evangelizing consistent UI patterns across the team.
+- **Event-Driven State** — Observer pattern for engine-to-UI communication, ensuring fluid user interactions even with massive datasets.
 
-### High-Level Architecture
+### High-Level Architecture Layers
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              PRESENTATION LAYER                              │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │
-│  │    Header    │  │   Sidebar    │  │  Telemetry   │  │   Tooltip    │    │
-│  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘    │
-│                              ↓ Design System ↓                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │  GlassPanel  │  IconButton  │  Badge  │  Text  │  ColorTokens  │     │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                              APPLICATION LAYER                               │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │                         page.tsx (Orchestrator)                       │   │
-│  │  • useDataLoader    • usePlaneVisibility    • useKeyboardShortcuts   │   │
-│  └──────────────────────────────────────────────────────────────────────┘   │
-│                                    ↓                                         │
-│  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │                            Viewer3D.tsx                               │   │
-│  │  • Leva Controls    • BIM Overlay    • Smart Ghosts                  │   │
-│  └──────────────────────────────────────────────────────────────────────┘   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                ENGINE LAYER                                  │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  ┌────────────────────┐  ┌────────────────────┐  ┌────────────────────┐    │
-│  │    SceneEngine     │  │  PointCloudRenderer│  │   PLYStreamLoader  │    │
-│  │  (Event Emitter)   │  │  (Custom Shaders)  │  │  (Binary Parser)   │    │
-│  └────────────────────┘  └────────────────────┘  └────────────────────┘    │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                 DATA LAYER                                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  ┌────────────────────┐  ┌────────────────────┐  ┌────────────────────┐    │
-│  │ DataSourceResolver │  │   ManifestLoader   │  │ SceneObjectsLoader │    │
-│  │  (Env Detection)   │  │  (Retry + Cache)   │  │  (BIM Metadata)    │    │
-│  └────────────────────┘  └────────────────────┘  └────────────────────┘    │
-└─────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Presentation ["<b>🎨 PRESENTATION</b>"]
+        direction TB
+        UI["UI Components<br/><small>Header • Sidebar • Panels</small>"]
+        DS["Design System"]
+        Tokens["Tokens & Primitives"]
+        UI --> DS --> Tokens
+    end
+
+    subgraph Application ["<b>🧠 APPLICATION</b>"]
+        direction TB
+        Page["<b>page.tsx</b><br/><small>Orchestrator</small>"]
+        Hooks["Custom Hooks<br/><small>useDataLoader • usePlaneVisibility</small>"]
+        Viewer["<b>Viewer3D.tsx</b><br/><small>React ↔ Three.js Bridge</small>"]
+        Page --> Hooks
+        Page --> Viewer
+    end
+
+    subgraph Engine ["<b>⚙️ THREE.JS ENGINE</b>"]
+        direction TB
+        Scene["<b>SceneEngine</b><br/><small>Event Emitter</small>"]
+        Renderer["PointCloudRenderer<br/><small>Custom Shaders</small>"]
+        PLY["PLYStreamLoader<br/><small>Binary Parser</small>"]
+        Scene --> Renderer
+        Scene --> PLY
+    end
+
+    subgraph Data ["<b>☁️ DATA LAYER</b>"]
+        direction TB
+        Resolver["DataSourceResolver<br/><small>S3 / Local</small>"]
+        Manifest["ManifestLoader<br/><small>Retry + Cache</small>"]
+        BIM["SceneObjectsLoader<br/><small>BIM Metadata</small>"]
+        Resolver --> Manifest --> BIM
+    end
+
+    %% Cross-layer connections
+    Hooks --> UI
+    Viewer -.->|"Observer Pattern"| Scene
+    PLY -.->|"Binary Stream"| Manifest
+
+    %% Styling
+    style Presentation fill:#0ea5e9,stroke:#0284c7,stroke-width:2px,color:#fff
+    style Application fill:#8b5cf6,stroke:#7c3aed,stroke-width:2px,color:#fff
+    style Engine fill:#10b981,stroke:#059669,stroke-width:2px,color:#fff
+    style Data fill:#f59e0b,stroke:#d97706,stroke-width:2px,color:#fff
+
+    style UI fill:#0c4a6e,stroke:#0ea5e9,color:#fff
+    style DS fill:#0c4a6e,stroke:#0ea5e9,color:#fff
+    style Tokens fill:#0c4a6e,stroke:#0ea5e9,color:#fff
+
+    style Page fill:#4c1d95,stroke:#8b5cf6,color:#fff
+    style Hooks fill:#4c1d95,stroke:#8b5cf6,color:#fff
+    style Viewer fill:#4c1d95,stroke:#8b5cf6,color:#fff
+
+    style Scene fill:#064e3b,stroke:#10b981,color:#fff
+    style Renderer fill:#064e3b,stroke:#10b981,color:#fff
+    style PLY fill:#064e3b,stroke:#10b981,color:#fff
+
+    style Resolver fill:#78350f,stroke:#f59e0b,color:#fff
+    style Manifest fill:#78350f,stroke:#f59e0b,color:#fff
+    style BIM fill:#78350f,stroke:#f59e0b,color:#fff
 ```
 
 ---
@@ -86,7 +129,7 @@ This codebase follows a **Documentation-First, SOLID-Compliant** architecture de
 
 ### 1. LiDAR Rendering Engine
 
-The core rendering pipeline is designed for **maximum performance with minimal GC pressure**.
+The core rendering pipeline is designed to push performance to the limit, handling massive datasets on commodity hardware.
 
 #### Binary PLY Streaming
 
@@ -124,10 +167,10 @@ if (abs(vObjectId - uSelectedId) < 0.1) {
 
 ### 2. Decoupled Engine Architecture
 
-The 3D engine operates **independently of React** through an event-driven architecture:
+The 3D engine operates independently of React through an event-driven architecture:
 
 ```typescript
-// SceneEngine: Owns all Three.js resources
+// SceneEngine: Owns all Three.js resources, independent of React lifecycle
 const engine = new SceneEngine();
 
 // Subscribe to state changes (React hook bridges these to component state)
@@ -149,7 +192,7 @@ scene.add(engine.getPointCloudObject());
 Environment-aware data resolution with retry logic and caching:
 
 ```typescript
-// Automatic source detection
+// Automatic source detection - seamless dev/prod switching
 const source = dataSourceResolver.resolve();
 // → { baseUrl: '/scans', isCloud: false } (development)
 // → { baseUrl: 'https://cdn.example.com/assets', isCloud: true } (production)
@@ -159,22 +202,39 @@ const room = await manifestLoader.loadRoom('Area_1', 'conferenceRoom_1');
 // → { modelUrl, objectsUrl } with 3 retries and 5-minute cache
 ```
 
+**Data Contract Pattern:**
+
+```typescript
+// ManifestRoom: Contract between ETL pipeline and frontend
+interface ManifestRoom {
+  name: string;       // Room identifier
+  file: string;       // Relative path to binary PLY
+  objects: string;    // Relative path to BIM metadata JSON
+}
+```
+
 ### 4. Design System Foundation
 
-Tokenized design system enabling consistent theming and component composition:
+A structured Design System built as a tool for evangelizing consistent UI patterns:
 
 ```typescript
 // Color tokens with semantic naming
-ColorTokens.surface.glass    // 'rgba(24, 24, 27, 0.95)'
-ColorTokens.accent.cyan.default  // '#22d3ee'
-ColorTokens.scene.axis.x     // '#ef4444' (Three.js axis colors)
+ColorTokens.surface.glass       // 'rgba(24, 24, 27, 0.95)'
+ColorTokens.accent.cyan.default // '#22d3ee'
+ColorTokens.scene.axis.x        // '#ef4444' (Three.js axis colors)
 
-// Atomic components
+// Atomic components with strict typing
 <GlassPanel variant="elevated">
   <Text variant="heading" color="primary">Dashboard</Text>
   <Badge variant="success">Active</Badge>
 </GlassPanel>
 ```
+
+**Design System Benefits:**
+- **Token-based theming** — Single source of truth for colors, spacing, typography
+- **Atomic primitives** — Composable building blocks (GlassPanel, IconButton, Badge, Text)
+- **Type safety** — Compile-time validation of variant and color props
+- **Consistency** — Ensures visual coherence across all UI surfaces
 
 ---
 
@@ -245,42 +305,48 @@ specs/                        # Arc42 architecture documentation
 
 ---
 
-## Quick Start
+## 🛠 Engineering Standards
 
-### Prerequisites
+This repository is structured to set engineering best practices and foster a strong culture of code quality.
 
-- Node.js 20+
-- pnpm (recommended) or npm
+### Code Quality Guardrails
 
-### Installation
+| Standard | Implementation |
+|----------|---------------|
+| Strict Typing | No `any`. All BIM metadata and Scene Objects are typed via `src/types` |
+| Atomic Design | UI components in `src/design-system` follow strict token usage |
+| Testing Culture | Critical logic (Data Parsing, URL Resolution) covered by Vitest specs |
+| Documentation | JSDoc on all public interfaces; Arc42 specs in `specs/` |
+| SOLID Principles | Single responsibility, dependency inversion throughout |
+
+### Quality Rules
+
+This project enforces **39 quality rules** across four categories:
+
+- **Object Calisthenics** (001-009) — Code hygiene at method level
+- **SOLID Principles** (010-014) — Object-oriented design
+- **Package Principles** (015-020) — Module cohesion and coupling
+- **Code Quality** (021-039) — DRY, KISS, YAGNI, security, testing
+
+---
+
+## Local Development
 
 ```bash
-git clone https://github.com/your-org/nextgen-aec.git
-cd nextgen-aec
+# 1. Install dependencies
 pnpm install
-```
 
-### Development
-
-```bash
+# 2. Run the development server
 pnpm dev
+
+# 3. Run the test suite
+pnpm test
+
+# 4. Generate coverage report
+pnpm test:coverage
 ```
 
-Open http://localhost:3000. Demo data streams from the production S3 bucket.
-
-### Testing
-
-```bash
-pnpm test           # Run unit tests
-pnpm test:coverage  # Generate coverage report
-```
-
-### Production Build
-
-```bash
-pnpm build
-pnpm start
-```
+Open http://localhost:3000. Demo data streams from the production S3 bucket automatically.
 
 ---
 
@@ -293,6 +359,7 @@ pnpm start
 | `NEXT_PUBLIC_DATA_SOURCE` | Base URL for assets | `/scans` (local) |
 
 **Production Example:**
+
 ```bash
 NEXT_PUBLIC_DATA_SOURCE=https://your-bucket.s3.amazonaws.com/assets
 ```
@@ -301,25 +368,29 @@ NEXT_PUBLIC_DATA_SOURCE=https://your-bucket.s3.amazonaws.com/assets
 
 ## Strategic Roadmap
 
-### Phase 1: Foundation (Current)
-- [x] WebGL point cloud rendering
-- [x] Binary PLY streaming
-- [x] Client-side LOD switching
-- [x] Design system foundation
-- [x] Cloud-agnostic data layer
+### Phase 1: Foundation ✅ (Current)
+
+- [x] WebGL point cloud rendering with custom shaders
+- [x] Binary PLY streaming with client-side LOD
+- [x] Design system foundation with tokenized theming
+- [x] Cloud-agnostic data layer with retry/cache
 - [x] Unit test coverage (85%+)
+- [x] Arc42 architecture documentation
 
 ### Phase 2: Performance (Q1)
+
 - [ ] **Rust/WASM Spatial Engine** — Migrate collision detection, volume calculation, and spatial queries to Rust via WebAssembly for 10x performance
 - [ ] **Web Workers** — Offload PLY parsing to worker threads
-- [ ] **Octree Culling** — Frustum culling for massive datasets
+- [ ] **Octree Culling** — Frustum culling for massive datasets (10M+ points)
 
 ### Phase 3: Collaboration (Q2)
+
 - [ ] **Real-time Sync** — Multi-user inspection via Y.js/SignalR
 - [ ] **Annotation System** — Persistent markup and defect tracking
 - [ ] **Measurement History** — Cloud-synced measurement storage
 
 ### Phase 4: AI Integration (Q3)
+
 - [ ] **Defect Detection** — Computer vision for crack/damage identification
 - [ ] **Deviation Analysis** — As-built vs. design comparison
 - [ ] **Smart Recommendations** — ML-driven inspection priorities
@@ -330,8 +401,8 @@ NEXT_PUBLIC_DATA_SOURCE=https://your-bucket.s3.amazonaws.com/assets
 
 | Layer | Technology | Purpose |
 |-------|------------|---------|
-| **Framework** | Next.js 15 | App Router, Edge Functions |
-| **Rendering** | Three.js + R3F | WebGL, React integration |
+| **Framework** | Next.js 16 | App Router, Edge Functions |
+| **Rendering** | Three.js + R3F | WebGL 2.0, React integration |
 | **State** | React Hooks | UI state, custom hooks |
 | **Styling** | Tailwind CSS | Utility-first CSS |
 | **Testing** | Vitest | Unit tests, coverage |
@@ -341,47 +412,18 @@ NEXT_PUBLIC_DATA_SOURCE=https://your-bucket.s3.amazonaws.com/assets
 
 ---
 
-## Engineering Standards
+## License & Proprietary Notice
 
-### Code Quality
+Copyright (c) 2025 Paulo Marques. All Rights Reserved.
 
-This project enforces **39 quality rules** across:
+**NOTICE:** This repository contains proprietary proof-of-concept code and architecture specifications. It is shared strictly for evaluation purposes regarding the "Founding Engineer" role.
 
-- **Object Calisthenics** (001-009) — Code hygiene at method level
-- **SOLID Principles** (010-014) — Object-oriented design
-- **Package Principles** (015-020) — Module cohesion
-- **Code Quality** (021-039) — DRY, KISS, YAGNI, security, testing
-
-### Architecture Documentation
-
-Complete Arc42 documentation in `specs/`:
-
-```
-specs/
-├── 01_introduction/       # Vision and goals
-├── 02_constraints/        # Quality rules
-├── 03_context/            # System boundaries
-├── 04_solution-strategy/  # Technology decisions
-├── 05_building-block-view/# C4 architecture
-└── 09_decisions/          # ADRs
-```
+Unauthorized copying, commercial use, modification, or distribution of this code, via any medium, is strictly prohibited without express written permission from the author.
 
 ---
 
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Ensure tests pass (`pnpm test`)
-4. Commit with conventional commits (`feat: add amazing feature`)
-5. Open a Pull Request
-
----
-
-## License
-
-MIT
-
----
+<div align="center">
 
 **Engineered for scale. Documented for audit. Built for the future of AEC.**
+
+</div>
