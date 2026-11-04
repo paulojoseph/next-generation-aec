@@ -47,3 +47,11 @@ public/scans/
 
 # OBRIGATÓRIO: Manter o manifesto (Ele é o mapa que aponta pro S3)
 !public/dataset_manifest.json
+
+# python
+
+__pycache__/
+.pytest_cache/
+venv/
+.coverage
+htmlcov/

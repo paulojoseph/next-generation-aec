@@ -281,6 +281,60 @@ pipeline/                     # Python ETL for S3DIS processing
 specs/                        # Arc42 architecture documentation
 ```
 
+### Scan-to-BIM Pipeline (Python)
+
+`pipeline/scan_to_bim.py` reads binary PLY scans (the 18-byte vertex layout
+written by `process_semantic.py`), detects planes with RANSAC and writes the
+JSON consumed by `BIMOverlay.tsx`. Run it from the repo root:
+
+```bash
+pip install -r pipeline/requirements.txt
+
+# Defaults: --input public/scans --output public/bim/bim_data.json --seed 42 --max-rooms 2
+python pipeline/scan_to_bim.py
+
+# Single file or custom paths; --max-rooms 0 processes every PLY found
+python pipeline/scan_to_bim.py --input /data/room.ply --output /tmp/bim.json --seed 7
+python pipeline/scan_to_bim.py --input /data/scans --max-rooms 0
+```
+
+- `--input` accepts a single `.ply` file or a directory (files are processed in
+  sorted name order). The output folder is created if needed.
+- The same `--seed` and input always produce the same JSON, and a room's result
+  does not depend on which other rooms were processed in the same run.
+- Exit code is `1` (with a message) when the input path is missing or contains
+  no PLY files. Importing the module has no side effects; use
+  `run_pipeline()` / `process_room()` from a backend.
+
+How a room is processed:
+
+1. **Plane detection** — iterative RANSAC (2 cm tolerance, up to 15 planes of
+   at least 1000 points). Hypotheses are scored on a 20k-point random subset,
+   then the winner is verified and refit on all points (~2.5 s for 1.1M points).
+2. **Classification** — horizontal planes are classified relative to each other:
+   the lowest level is the floor, the highest is the ceiling if it is at least
+   2 m above the floor; horizontal planes in between (table tops, shelves) and
+   planes tilted more than 10° from vertical are ignored. This works for scans at
+   any world height (e.g. upper storeys).
+3. **Walls** — vertical planes are merged when they are parallel (10°) and
+   coplanar (10 cm), so a thick or panelled wall is reported once, while a step
+   wall and a recess wall 0.4 m apart stay separate. Planes that have room
+   points on both sides within their own footprint (fits through furniture in
+   the middle of the room) are dropped.
+4. **Measurements** — wall length/height/area from the merged inliers; room
+   width/depth/area from the floor plane; ceiling height is the floor-to-ceiling
+   distance (falling back to the tallest wall, then 2.8 m, when no ceiling plane
+   was found).
+
+The JSON format is unchanged: `classification` counts the final floor/ceiling/
+wall planes, while `planes_detected` is the raw RANSAC count. Tests use
+synthetic scans (the real dataset is not in the repo):
+
+```bash
+pytest
+python pipeline/tests/benchmark_scan_to_bim.py   # timing on a ~1.1M point synthetic room
+```
+
 ---
 
 ## Performance Characteristics

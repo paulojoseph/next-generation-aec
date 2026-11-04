@@ -3,25 +3,47 @@ Elite Scan-to-BIM Pipeline
 ===========================
 RANSAC Plane Detection + Wall Extraction + Room Segmentation
 
-This script transforms raw LiDAR point clouds into measured BIM geometry.
+This script transforms raw LiDAR point clouds into measured BIM geometry:
 
-Dependencies: numpy (already installed with process scripts)
-Output: walls.json, rooms.json, measurements.json
+  1. iterative RANSAC plane detection (hypotheses scored on a random subset,
+     winner verified and refit on all points)
+  2. classification relative to the scan: lowest horizontal level = floor,
+     highest = ceiling, table tops / tilted surfaces ignored
+  3. walls: fragments of the same wall merged, planes cutting through the
+     middle of the room dropped
+  4. measurements: walls, room footprint, floor-to-ceiling height
+
+Dependencies: numpy
+Output: a single JSON file (default: public/bim/bim_data.json) consumed by
+        src/features/viewer/BIMOverlay.tsx
+
+Usage:
+    python pipeline/scan_to_bim.py                         # defaults below
+    python pipeline/scan_to_bim.py --input public/scans --output public/bim/bim_data.json
+    python pipeline/scan_to_bim.py --input room.ply --seed 7 --max-rooms 0
+
+Importing this module has no side effects; the pipeline only runs via main()
+or run_pipeline().
 """
 
-import numpy as np
+import argparse
+import glob
 import json
 import os
-import struct
-from collections import defaultdict
-from typing import List, Tuple, Dict, Optional
-import glob
+import sys
+from typing import Dict, List, Optional, Sequence, Tuple
 
-# Configuration
-INPUT_DIR = "public/scans"
-OUTPUT_DIR = "public/bim"
+import numpy as np
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# Defaults (relative to the repo root, matching the original hardcoded paths)
+DEFAULT_INPUT = "public/scans"
+DEFAULT_OUTPUT = os.path.join("public", "bim", "bim_data.json")
+DEFAULT_SEED = 42
+DEFAULT_MAX_ROOMS = 2  # 0 = process every PLY found
+
+# Kept for backwards compatibility with older imports
+INPUT_DIR = DEFAULT_INPUT
+OUTPUT_DIR = os.path.dirname(DEFAULT_OUTPUT)
 
 # ============================================================================
 # RANSAC PLANE DETECTION (Custom Implementation)
@@ -53,12 +75,25 @@ def point_to_plane_distance(points: np.ndarray, normal: np.ndarray, d: float) ->
     """Calculate distance from points to plane ax + by + cz + d = 0"""
     return np.abs(np.dot(points, normal) + d) / np.linalg.norm(normal)
 
+# Hypotheses are scored on a random subset of this many points. The plane
+# with the most inliers in the subset is, with overwhelming probability, the
+# one with the most inliers overall, at a fraction of the cost. The winner is
+# then verified and refit on ALL points.
+SCORE_SAMPLE_SIZE = 20_000
+# Hypotheses are evaluated in batches of this size (memory: sample x batch).
+SCORE_BATCH_SIZE = 128
+
 def ransac_plane(points: np.ndarray, 
                  threshold: float = 0.02,  # 2cm tolerance
                  iterations: int = 1000,
-                 min_points: int = 100) -> Optional[Dict]:
+                 min_points: int = 100,
+                 rng: Optional[np.random.Generator] = None,
+                 sample_size: int = SCORE_SAMPLE_SIZE) -> Optional[Dict]:
     """
     RANSAC algorithm to detect a single plane in point cloud.
+
+    `rng` controls the random sampling; pass a seeded Generator for
+    reproducible results. Defaults to an unseeded Generator.
     
     Returns dict with:
         - normal: plane normal vector
@@ -66,34 +101,55 @@ def ransac_plane(points: np.ndarray,
         - inliers: indices of points on this plane
         - centroid: center of plane
     """
-    if len(points) < min_points:
+    n = len(points)
+    if n < min_points:
         return None
     
-    best_inliers = []
-    best_normal = None
-    best_d = None
+    if rng is None:
+        rng = np.random.default_rng()
     
-    for _ in range(iterations):
-        # Sample 3 random points
-        idx = np.random.choice(len(points), 3, replace=False)
-        sample = points[idx]
-        
-        # Fit plane to sample
-        try:
-            normal, d = fit_plane_svd(sample)
-        except:
-            continue
-        
-        # Count inliers
-        distances = point_to_plane_distance(points, normal, d)
-        inlier_mask = distances < threshold
-        inliers = np.where(inlier_mask)[0]
-        
-        if len(inliers) > len(best_inliers):
-            best_inliers = inliers
-            best_normal = normal
-            best_d = d
+    # Subset used both to draw hypotheses from and to score them
+    if n > sample_size:
+        sample = points[rng.choice(n, sample_size, replace=False)]
+    else:
+        sample = points
+    m = len(sample)
     
+    # Generate all hypotheses at once: a plane through 3 random sample points.
+    # Degenerate triples (repeated or collinear points) have a ~zero normal
+    # and are dropped.
+    idx = rng.integers(0, m, size=(iterations, 3))
+    p0, p1, p2 = sample[idx[:, 0]], sample[idx[:, 1]], sample[idx[:, 2]]
+    normals = np.cross(p1 - p0, p2 - p0)
+    norms = np.linalg.norm(normals, axis=1)
+    valid = norms > 1e-12
+    if not np.any(valid):
+        return None
+    normals = normals[valid] / norms[valid, None]
+    offsets = -np.einsum('ij,ij->i', normals, p0[valid])
+    
+    # Score hypotheses on the sample, in batches (first best wins on ties).
+    # float32 is plenty here: the PLY stores float32 coordinates and the
+    # winner is verified and refit in float64 below.
+    sample32 = sample.astype(np.float32)
+    normals32 = normals.astype(np.float32)
+    offsets32 = offsets.astype(np.float32)
+    best_count = -1
+    best_normal = best_d = None
+    for start in range(0, len(normals), SCORE_BATCH_SIZE):
+        batch_normals = normals32[start:start + SCORE_BATCH_SIZE]
+        batch_offsets = offsets32[start:start + SCORE_BATCH_SIZE]
+        distances = np.abs(sample32 @ batch_normals.T + batch_offsets)
+        counts = np.count_nonzero(distances < threshold, axis=0)
+        j = int(np.argmax(counts))
+        if counts[j] > best_count:
+            best_count = int(counts[j])
+            best_normal = normals[start + j]
+            best_d = offsets[start + j]
+    
+    # Verify the winner against every point
+    distances = point_to_plane_distance(points, best_normal, best_d)
+    best_inliers = np.flatnonzero(distances < threshold)
     if len(best_inliers) < min_points:
         return None
     
@@ -111,10 +167,14 @@ def ransac_plane(points: np.ndarray,
 
 def detect_all_planes(points: np.ndarray, 
                       max_planes: int = 20,
-                      min_points: int = 500) -> List[Dict]:
+                      min_points: int = 500,
+                      rng: Optional[np.random.Generator] = None) -> List[Dict]:
     """
     Iteratively detect all major planes in point cloud.
     """
+    if rng is None:
+        rng = np.random.default_rng()
+    
     planes = []
     remaining_points = points.copy()
     remaining_indices = np.arange(len(points))
@@ -123,7 +183,7 @@ def detect_all_planes(points: np.ndarray,
         if len(remaining_points) < min_points:
             break
             
-        plane = ransac_plane(remaining_points, min_points=min_points)
+        plane = ransac_plane(remaining_points, min_points=min_points, rng=rng)
         if plane is None:
             break
         
@@ -131,11 +191,12 @@ def detect_all_planes(points: np.ndarray,
         plane['original_indices'] = remaining_indices[plane['inliers']]
         planes.append(plane)
         
-        # Remove inliers for next iteration
+        # Remove inliers for next iteration (np.compress is much faster
+        # than boolean row indexing for large (N, 3) arrays)
         mask = np.ones(len(remaining_points), dtype=bool)
         mask[plane['inliers']] = False
-        remaining_points = remaining_points[mask]
-        remaining_indices = remaining_indices[mask]
+        remaining_points = np.compress(mask, remaining_points, axis=0)
+        remaining_indices = np.compress(mask, remaining_indices)
         
         print(f"  Plane {i+1}: {plane['point_count']} points, normal={plane['normal'].round(3)}")
     
@@ -145,26 +206,202 @@ def detect_all_planes(points: np.ndarray,
 # PLANE CLASSIFICATION
 # ============================================================================
 
-def classify_plane(plane: Dict) -> str:
+# A plane is horizontal when its normal is mostly along Y (Y is up).
+HORIZONTAL_NORMAL_Y = 0.8
+# Horizontal planes within this distance of the floor/ceiling level are treated
+# as fragments of that floor/ceiling (RANSAC often splits a surface in pieces).
+LEVEL_TOLERANCE = 0.3
+# Minimum plausible floor-to-ceiling distance; two horizontal levels closer
+# than this cannot be a floor and a ceiling (e.g. floor + table top).
+MIN_CEILING_HEIGHT = 2.0
+# A wall must be vertical: its normal may deviate this much from horizontal.
+WALL_MAX_TILT_DEG = 10.0
+# Two wall planes are fragments of the same wall when they are parallel
+# (within this angle) and coplanar (within this distance). Keep the distance
+# well below real wall offsets such as a step/recess (~0.4 m).
+WALL_MERGE_MAX_ANGLE_DEG = 10.0
+WALL_MERGE_MAX_DISTANCE = 0.10
+# A real wall has the room on one side only. Within the wall's own footprint,
+# at least this fraction of the points must lie on a single side; planes that
+# cut through the middle of the room (clutter, furniture) fail this test.
+WALL_MIN_ONE_SIDE_FRACTION = 0.75
+
+def unit_normal(plane: Dict) -> np.ndarray:
+    return plane['normal'] / np.linalg.norm(plane['normal'])
+
+def is_horizontal(plane: Dict) -> bool:
+    return abs(unit_normal(plane)[1]) > HORIZONTAL_NORMAL_Y
+
+def is_vertical(plane: Dict) -> bool:
+    return abs(unit_normal(plane)[1]) <= np.sin(np.radians(WALL_MAX_TILT_DEG))
+
+def classify_planes(planes: List[Dict], points: np.ndarray) -> Dict[str, List[Dict]]:
     """
-    Classify plane as FLOOR, CEILING, or WALL based on normal direction.
+    Classify planes as FLOOR, CEILING, WALL or OTHER (furniture, shelves,
+    tilted surfaces...).
+
+    Vertical planes (tilt <= WALL_MAX_TILT_DEG) are wall candidates; see
+    refine_walls() for merging and the mid-room filter. Planes that are
+    neither vertical nor horizontal are OTHER. Horizontal planes are classified relative to
+    each other instead of with absolute heights, so the result does not depend
+    on where the scan sits in world space (upper floors, re-centred scans):
+
+      * floor level   = the lowest horizontal plane
+      * ceiling level = the highest horizontal plane, if it is at least
+                        MIN_CEILING_HEIGHT above the floor level
+      * horizontal planes within LEVEL_TOLERANCE of a level belong to it,
+        anything else in between (table tops, shelves) is OTHER
+
+    When only one level exists, it is a floor if it lies in the lower half of
+    the point cloud's vertical extent and a ceiling otherwise.
+    Each plane gets a 'type' key; the returned dict groups them by type.
     """
-    normal = plane['normal']
-    # Normalize
-    normal = normal / np.linalg.norm(normal)
-    
-    # Check if horizontal (floor/ceiling) or vertical (wall)
-    # Y is up in our coordinate system
-    y_component = abs(normal[1])
-    
-    if y_component > 0.8:  # Mostly horizontal
-        # Check if pointing up (floor) or down (ceiling)
-        if plane['centroid'][1] < 1.0:  # Lower than 1m = floor
-            return 'FLOOR'
+    classified: Dict[str, List[Dict]] = {'FLOOR': [], 'CEILING': [], 'WALL': [], 'OTHER': []}
+    horizontal = []
+    for plane in planes:
+        if is_horizontal(plane):
+            horizontal.append(plane)
+        elif is_vertical(plane):
+            plane['type'] = 'WALL'
+            classified['WALL'].append(plane)
         else:
-            return 'CEILING'
+            plane['type'] = 'OTHER'
+            classified['OTHER'].append(plane)
+    
+    if not horizontal:
+        return classified
+    
+    levels = [plane['centroid'][1] for plane in horizontal]
+    lowest, highest = min(levels), max(levels)
+    
+    floor_y: Optional[float] = None
+    ceiling_y: Optional[float] = None
+    if highest - lowest >= MIN_CEILING_HEIGHT:
+        floor_y, ceiling_y = lowest, highest
     else:
-        return 'WALL'
+        # Single level: is it near the bottom or the top of the scan?
+        min_y, max_y = points[:, 1].min(), points[:, 1].max()
+        if lowest - min_y <= max_y - highest:
+            floor_y = lowest
+        else:
+            ceiling_y = highest
+    
+    for plane in horizontal:
+        y = plane['centroid'][1]
+        if floor_y is not None and abs(y - floor_y) <= LEVEL_TOLERANCE:
+            plane_type = 'FLOOR'
+        elif ceiling_y is not None and abs(y - ceiling_y) <= LEVEL_TOLERANCE:
+            plane_type = 'CEILING'
+        else:
+            plane_type = 'OTHER'
+        plane['type'] = plane_type
+        classified[plane_type].append(plane)
+    
+    return classified
+
+# ============================================================================
+# WALL REFINEMENT (merge fragments, drop mid-room planes)
+# ============================================================================
+
+def are_same_wall(a: Dict, b: Dict) -> bool:
+    """Parallel within WALL_MERGE_MAX_ANGLE_DEG and coplanar within WALL_MERGE_MAX_DISTANCE."""
+    na, nb = unit_normal(a), unit_normal(b)
+    if abs(np.dot(na, nb)) < np.cos(np.radians(WALL_MERGE_MAX_ANGLE_DEG)):
+        return False
+    # Distance from b's centroid to a's plane, and vice versa (symmetric)
+    dist_ab = abs(np.dot(na, b['centroid'] - a['centroid']))
+    dist_ba = abs(np.dot(nb, a['centroid'] - b['centroid']))
+    return max(dist_ab, dist_ba) <= WALL_MERGE_MAX_DISTANCE
+
+def merge_plane_group(group: List[Dict], points: np.ndarray) -> Dict:
+    """Combine the inliers of several plane fragments into a single plane."""
+    if len(group) == 1:
+        return group[0]
+    indices = np.concatenate([p['original_indices'] for p in group])
+    inlier_points = points[indices]
+    normal, d = fit_plane_svd(inlier_points)
+    return {
+        'normal': normal,
+        'd': d,
+        'centroid': inlier_points.mean(axis=0),
+        'point_count': len(indices),
+        'original_indices': indices,
+        'type': group[0]['type'],
+        'merged_from': len(group),
+    }
+
+def merge_wall_planes(walls: List[Dict], points: np.ndarray) -> List[Dict]:
+    """
+    Merge wall planes that are fragments of the same physical wall (RANSAC
+    splits a wall when it is thick, has panelling, or when a few points are
+    left over after the first pass). Walls that are merely close, like a step
+    wall and a recess wall 0.4 m apart, stay separate. Order is preserved:
+    each merged wall takes the position of its first fragment.
+    """
+    groups: List[List[Dict]] = []
+    for plane in walls:
+        for group in groups:
+            if are_same_wall(group[0], plane):
+                group.append(plane)
+                break
+        else:
+            groups.append([plane])
+    return [merge_plane_group(group, points) for group in groups]
+
+def has_room_on_one_side(plane: Dict, points: np.ndarray,
+                         threshold: float = 0.02,
+                         footprint_margin: float = 0.10) -> bool:
+    """
+    True when, inside the wall's own footprint (its horizontal extent and
+    height, grown by `footprint_margin`), at least WALL_MIN_ONE_SIDE_FRACTION
+    of the points that are not part of the wall lie on a single side of it.
+    Real walls bound the room; planes fitted through furniture in the middle
+    of the room have points on both sides. Restricting to the footprint keeps
+    walls of L-shaped rooms valid.
+
+    "Part of the wall" is the band spanned by the wall's own inliers (plus
+    `threshold`), so a merged thick wall does not count against itself.
+    """
+    normal = unit_normal(plane)
+    along = np.array([-normal[2], 0.0, normal[0]])   # horizontal, in-plane
+    along_norm = np.linalg.norm(along)
+    if along_norm == 0:
+        return True
+    along /= along_norm
+    
+    inlier_idx = plane['original_indices']
+    inliers = points[inlier_idx]
+    u_inl, y_inl = inliers @ along, inliers[:, 1]
+    u_all, y_all = points @ along, points[:, 1]
+    in_footprint = ((u_all >= u_inl.min() - footprint_margin) &
+                    (u_all <= u_inl.max() + footprint_margin) &
+                    (y_all >= y_inl.min() - footprint_margin) &
+                    (y_all <= y_inl.max() + footprint_margin))
+    
+    signed = (points - plane['centroid']) @ normal
+    wall_lo = signed[inlier_idx].min() - threshold
+    wall_hi = signed[inlier_idx].max() + threshold
+    front = np.count_nonzero(in_footprint & (signed > wall_hi))
+    back = np.count_nonzero(in_footprint & (signed < wall_lo))
+    total = front + back
+    if total == 0:
+        return True
+    return max(front, back) / total >= WALL_MIN_ONE_SIDE_FRACTION
+
+def refine_walls(wall_planes: List[Dict], points: np.ndarray) -> Tuple[List[Dict], List[Dict]]:
+    """
+    Turn raw vertical planes into walls: merge fragments of the same wall,
+    then drop planes that do not bound the room.
+    Returns (walls, rejected).
+    """
+    walls, rejected = [], []
+    for plane in merge_wall_planes(wall_planes, points):
+        if has_room_on_one_side(plane, points):
+            walls.append(plane)
+        else:
+            plane['type'] = 'OTHER'
+            rejected.append(plane)
+    return walls, rejected
 
 # ============================================================================
 # WALL MEASUREMENT EXTRACTION
@@ -213,9 +450,14 @@ def extract_wall_measurements(plane: Dict, points: np.ndarray) -> Dict:
 # ROOM SEGMENTATION
 # ============================================================================
 
-def extract_room_from_floor(floor_plane: Dict, points: np.ndarray, walls: List[Dict]) -> Dict:
+def extract_room_from_floor(floor_plane: Dict, points: np.ndarray, walls: List[Dict],
+                            ceiling_plane: Optional[Dict] = None) -> Dict:
     """
     Extract room boundary and measurements from floor plane.
+
+    Ceiling height is the floor-to-ceiling distance when a ceiling plane is
+    available. Otherwise it falls back to the tallest wall (which overestimates
+    rooms whose walls continue above a dropped ceiling), then to 2.8 m.
     """
     floor_points = points[floor_plane['original_indices']]
     
@@ -227,11 +469,11 @@ def extract_room_from_floor(floor_plane: Dict, points: np.ndarray, walls: List[D
     depth = max_coords[2] - min_coords[2]
     floor_area = width * depth
     
-    # Estimate ceiling height from wall heights
     ceiling_height = 2.8  # Default
-    if walls:
-        wall_heights = [w['height'] for w in walls]
-        ceiling_height = max(wall_heights)
+    if ceiling_plane is not None:
+        ceiling_height = ceiling_plane['centroid'][1] - floor_plane['centroid'][1]
+    elif walls:
+        ceiling_height = max(w['height'] for w in walls)
     
     volume = floor_area * ceiling_height
     perimeter = 2 * (width + depth)
@@ -258,8 +500,16 @@ def extract_room_from_floor(floor_plane: Dict, points: np.ndarray, walls: List[D
 # PLY LOADING
 # ============================================================================
 
+# Vertex layout written by process_semantic.py (18 bytes, little endian):
+# x,y,z (float32), r,g,b (uint8), label (uint8), objectId (uint16)
+PLY_VERTEX_DTYPE = np.dtype([
+    ('x', '<f4'), ('y', '<f4'), ('z', '<f4'),
+    ('rgb', 'u1', (3,)), ('label', 'u1'), ('objectId', '<u2'),
+])
+assert PLY_VERTEX_DTYPE.itemsize == 18
+
 def load_ply_points(filepath: str) -> np.ndarray:
-    """Load point positions from our custom PLY format."""
+    """Load point positions (float64, shape (N, 3)) from our custom PLY format."""
     with open(filepath, 'rb') as f:
         # Read header
         vertex_count = 0
@@ -273,27 +523,30 @@ def load_ply_points(filepath: str) -> np.ndarray:
         if vertex_count == 0:
             return np.array([], dtype=np.float64)
         
-        # Read binary data
-        # Format: x,y,z (float32), r,g,b (uint8), label (uint8), objectId (uint16)
-        # = 12 + 3 + 1 + 2 = 18 bytes per vertex
-        points = []
-        for _ in range(vertex_count):
-            data = f.read(18)
-            if len(data) < 18:
-                break
-            x, y, z = struct.unpack('<fff', data[:12])
-            points.append([x, y, z])
+        # Read binary data in one go; a truncated file yields fewer vertices
+        data = f.read(vertex_count * PLY_VERTEX_DTYPE.itemsize)
+        count = len(data) // PLY_VERTEX_DTYPE.itemsize
+        vertices = np.frombuffer(data, dtype=PLY_VERTEX_DTYPE, count=count)
         
-        return np.array(points, dtype=np.float64)
+        points = np.empty((count, 3), dtype=np.float64)
+        points[:, 0] = vertices['x']
+        points[:, 1] = vertices['y']
+        points[:, 2] = vertices['z']
+        return points
 
 # ============================================================================
 # MAIN PIPELINE
 # ============================================================================
 
-def process_room(ply_path: str) -> Dict:
+def process_room(ply_path: str, seed: Optional[int] = DEFAULT_SEED) -> Dict:
     """
     Full Scan-to-BIM pipeline for a single room.
+
+    A fresh random generator is created from `seed` for every room, so the
+    result for a given (file, seed) pair does not depend on which other rooms
+    were processed before it in the same run.
     """
+    rng = np.random.default_rng(seed)
     room_name = os.path.basename(ply_path).replace('.ply', '')
     print(f"\n{'='*60}")
     print(f"Processing: {room_name}")
@@ -306,20 +559,21 @@ def process_room(ply_path: str) -> Dict:
     
     # Detect planes
     print("\nDetecting planes (RANSAC)...")
-    planes = detect_all_planes(points, max_planes=15, min_points=1000)
+    planes = detect_all_planes(points, max_planes=15, min_points=1000, rng=rng)
     print(f"  Found {len(planes)} planes")
     
     # Classify planes
     print("\nClassifying planes...")
-    classified = {'FLOOR': [], 'CEILING': [], 'WALL': []}
-    for plane in planes:
-        plane_type = classify_plane(plane)
-        plane['type'] = plane_type
-        classified[plane_type].append(plane)
+    classified = classify_planes(planes, points)
+    wall_candidates = classified['WALL']
+    classified['WALL'], rejected = refine_walls(wall_candidates, points)
+    classified['OTHER'].extend(rejected)
     
     print(f"  FLOOR: {len(classified['FLOOR'])}")
     print(f"  CEILING: {len(classified['CEILING'])}")
-    print(f"  WALLS: {len(classified['WALL'])}")
+    print(f"  WALLS: {len(classified['WALL'])} "
+          f"(from {len(wall_candidates)} vertical planes, {len(rejected)} mid-room planes dropped)")
+    print(f"  OTHER (furniture, tilted, mid-room): {len(classified['OTHER'])}")
     
     # Calculate centering offset (same as viewer does)
     min_coords = points.min(axis=0)
@@ -349,7 +603,8 @@ def process_room(ply_path: str) -> Dict:
     print("\nExtracting room measurements...")
     room = None
     if classified['FLOOR']:
-        room = extract_room_from_floor(classified['FLOOR'][0], points, walls)
+        ceiling_plane = classified['CEILING'][0] if classified['CEILING'] else None
+        room = extract_room_from_floor(classified['FLOOR'][0], points, walls, ceiling_plane)
         print(f"  Floor Area: {room['floor_area']:.2f} m²")
         print(f"  Dimensions: {room['width']:.2f}m x {room['depth']:.2f}m")
         print(f"  Ceiling Height: {room['ceiling_height']:.2f}m")
@@ -369,33 +624,99 @@ def process_room(ply_path: str) -> Dict:
         }
     }
 
-def main():
+def collect_ply_files(input_path: str) -> List[str]:
+    """
+    Resolve `input_path` to a sorted list of PLY files.
+    Accepts either a single .ply file or a directory containing .ply files.
+    Sorting makes the selection (and therefore the output order) deterministic
+    regardless of filesystem iteration order.
+    """
+    if os.path.isfile(input_path):
+        return [input_path]
+    if os.path.isdir(input_path):
+        return sorted(glob.glob(os.path.join(input_path, "*.ply")))
+    raise FileNotFoundError(f"Input path does not exist: {input_path}")
+
+def write_results(results: List[Dict], output_path: str) -> None:
+    """Write the BIM results to `output_path`, creating parent folders as needed."""
+    output_dir = os.path.dirname(output_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+    with open(output_path, 'w') as f:
+        json.dump(results, f, indent=2)
+
+def run_pipeline(input_path: str = DEFAULT_INPUT,
+                 output_path: str = DEFAULT_OUTPUT,
+                 seed: Optional[int] = DEFAULT_SEED,
+                 max_rooms: int = DEFAULT_MAX_ROOMS) -> List[Dict]:
+    """
+    Process the PLY file(s) at `input_path` and write the JSON to `output_path`.
+
+    max_rooms: maximum number of rooms to process (0 = no limit).
+    Returns the list of room results that was written.
+    Raises FileNotFoundError if the input path is missing or has no PLY files.
+    """
+    ply_files = collect_ply_files(input_path)
+    if not ply_files:
+        raise FileNotFoundError(f"No PLY files found in {input_path}")
+    if max_rooms > 0:
+        ply_files = ply_files[:max_rooms]
+    
+    results = [process_room(ply_path, seed=seed) for ply_path in ply_files]
+    write_results(results, output_path)
+    return results
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Scan-to-BIM: RANSAC plane detection + automatic measurements "
+                    "from binary PLY LiDAR scans."
+    )
+    parser.add_argument(
+        "--input", default=DEFAULT_INPUT,
+        help="PLY file or directory containing .ply files (default: %(default)s)"
+    )
+    parser.add_argument(
+        "--output", default=DEFAULT_OUTPUT,
+        help="Path of the JSON file to write (default: %(default)s)"
+    )
+    parser.add_argument(
+        "--seed", type=int, default=DEFAULT_SEED,
+        help="Random seed for RANSAC sampling; same seed + same input => "
+             "same output (default: %(default)s)"
+    )
+    parser.add_argument(
+        "--max-rooms", type=int, default=DEFAULT_MAX_ROOMS,
+        help="Maximum number of rooms to process, 0 = all (default: %(default)s)"
+    )
+    return parser
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    args = build_arg_parser().parse_args(argv)
+    
     print("="*60)
     print("🏗️  ELITE SCAN-TO-BIM PIPELINE")
     print("   RANSAC Plane Detection + Automatic Measurements")
     print("="*60)
+    print(f"  input:     {args.input}")
+    print(f"  output:    {args.output}")
+    print(f"  seed:      {args.seed}")
+    print(f"  max rooms: {args.max_rooms or 'all'}")
     
-    # Process a sample room
-    ply_files = glob.glob(os.path.join(INPUT_DIR, "*.ply"))
-    
-    if not ply_files:
-        print("❌ No PLY files found in", INPUT_DIR)
-        return
-    
-    # Process first 2 rooms as demo
-    results = []
-    for ply_path in ply_files[:2]:
-        result = process_room(ply_path)
-        results.append(result)
-    
-    # Save results
-    output_file = os.path.join(OUTPUT_DIR, "bim_data.json")
-    with open(output_file, 'w') as f:
-        json.dump(results, f, indent=2)
+    try:
+        run_pipeline(
+            input_path=args.input,
+            output_path=args.output,
+            seed=args.seed,
+            max_rooms=args.max_rooms,
+        )
+    except FileNotFoundError as exc:
+        print(f"❌ {exc}")
+        return 1
     
     print(f"\n{'='*60}")
-    print(f"✅ Results saved to: {output_file}")
+    print(f"✅ Results saved to: {args.output}")
     print("="*60)
+    return 0
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
