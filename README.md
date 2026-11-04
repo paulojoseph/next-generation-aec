@@ -261,9 +261,13 @@ src/
 │   └── SceneObjectsLoader.ts # BIM metadata loader
 │
 ├── features/
+│   ├── bim/                  # BIM planes from bim_data.json (pure TS, tested)
+│   │   ├── roomLayout.ts     # JSON entry -> room layout (walls, step, heights)
+│   │   └── planes.ts         # Plane list + measurement snap targets
+│   │
 │   ├── viewer/               # 3D visualization components
 │   │   ├── Viewer3D.tsx      # React bridge to engine
-│   │   ├── BIMOverlay.tsx    # Plane visualization
+│   │   ├── BIMOverlay.tsx    # Draws the BIM planes, measurement tool
 │   │   ├── hooks/            # Interaction, navigation, loader hooks
 │   │   └── materials/        # GLSL shaders
 │   │
@@ -285,7 +289,7 @@ specs/                        # Arc42 architecture documentation
 
 `pipeline/scan_to_bim.py` reads binary PLY scans (the 18-byte vertex layout
 written by `process_semantic.py`), detects planes with RANSAC and writes the
-JSON consumed by `BIMOverlay.tsx`. Run it from the repo root:
+JSON used by the [BIM overlay](#bim-overlay). Run it from the repo root:
 
 ```bash
 pip install -r pipeline/requirements.txt
@@ -334,6 +338,31 @@ synthetic scans (the real dataset is not in the repo):
 pytest
 python pipeline/tests/benchmark_scan_to_bim.py   # timing on a ~1.1M point synthetic room
 ```
+
+### BIM Overlay
+
+The viewer draws the room's planes from `public/bim/bim_data.json`; no room
+shape is hardcoded in the frontend (which room is shown is still the `ROOM`
+constant in `page.tsx`).
+
+1. **Loading** — `page.tsx` finds the room's area (the top-level key) in the
+   manifest and loads the `<area>_<room>` entry of the JSON once. Without it the
+   viewer still works and the planes list is empty.
+2. **Room layout** — `src/features/bim/roomLayout.ts` takes the outermost wall
+   on each side (planes inside the room, such as furniture faces, are ignored),
+   detects a step (a lowered ceiling section along the left or right wall), and
+   measures heights from the floor plane to the wall tops.
+3. **Planes** — `src/features/bim/planes.ts` turns the layout into the plane
+   list: `Wall_Left`, `Wall_Right`, `Wall_Back`, `Wall_Front`, `Step_Wall`,
+   `Step_Ceiling`, `Ceiling`, `Floor` (the two step planes only exist in
+   stepped rooms), each with its size, position, rotation and outline.
+4. **Display** — the sidebar lists these planes. `BIMOverlay.tsx` draws the same
+   list, aligned with the point cloud's floor, with hover, Ctrl+click to hide a
+   plane, and the measurement tool: click in Measure mode (or Shift+click) to
+   start, then click a second point or press W/A/S/D/Space to snap to the
+   ceiling, floor, walls or opposite wall; Esc cancels.
+
+Both modules are plain TypeScript (no React or three.js) and covered by Vitest.
 
 ---
 
@@ -387,18 +416,23 @@ This project enforces **39 quality rules** across four categories:
 ## Local Development
 
 ```bash
-# 1. Install dependencies
-pnpm install
+# 1. Install dependencies (from package-lock.json)
+npm ci
 
 # 2. Run the development server
-pnpm dev
+npm run dev
 
-# 3. Run the test suite
-pnpm test
-
-# 4. Generate coverage report
-pnpm test:coverage
+# 3. Run the test suite once (or `npm run test:watch`)
+npm test
 ```
+
+Tests are Vitest specs (`*.spec.ts`) next to the code in `src/`, run in the
+Node environment (no DOM). They cover the data layer, the engine and the BIM
+modules in `src/features/bim`. The BIM specs run on the real
+`public/bim/bim_data.json`, so after regenerating it, failing values are
+expected: check them against the scan before updating the tests.
+`vitest.config.ts` has coverage settings, but no coverage provider is installed,
+so there is no coverage script.
 
 Open http://localhost:3000. Demo data streams from the production S3 bucket automatically.
 

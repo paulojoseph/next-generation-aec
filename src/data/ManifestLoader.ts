@@ -150,6 +150,28 @@ export class ManifestLoader {
   }
 
   /**
+   * Find the area (top-level manifest key) that contains a room.
+   * Throws if no area has it, or if several do: S3DIS reuses room names
+   * across areas, so the name alone would be ambiguous.
+   */
+  async findRoomArea(roomName: string): Promise<string> {
+    const manifest = await this.loadManifest();
+    const areas = Object.keys(manifest).filter((areaKey) =>
+      manifest[areaKey].some((r) => r.name === roomName)
+    );
+
+    if (areas.length === 0) {
+      throw new Error(`[ManifestLoader] Room "${roomName}" not found in any area`);
+    }
+    if (areas.length > 1) {
+      throw new Error(
+        `[ManifestLoader] Room "${roomName}" is in several areas: ${areas.join(', ')}`
+      );
+    }
+    return areas[0];
+  }
+
+  /**
    * Get all available areas.
    */
   async getAreas(): Promise<string[]> {

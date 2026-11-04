@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
@@ -24,6 +24,8 @@ import { SettingsModal } from '@/features/ui/SettingsModal';
 
 // Data Layer
 import { manifestLoader, sceneObjectsLoader, dataSourceResolver } from '@/data';
+import { buildRoomLayout, findBimRoom, type BimRoom } from '@/features/bim/roomLayout';
+import { buildPlanes, type PlaneSpec } from '@/features/bim/planes';
 
 // Contexts
 import { useToast } from '@/contexts/ToastContext';
@@ -34,8 +36,38 @@ import {
   ViewerStats,
   HoverInfo,
   ViewMode,
-  DEFAULT_PLANES,
 } from '@/types';
+
+// ============================================================================
+// BIM DATA
+// ============================================================================
+
+const ROOM = 'conferenceRoom_1';
+const BIM_DATA_URL = '/bim/bim_data.json';
+
+/**
+ * Loads the room's entry from the Scan-to-BIM output. The pipeline names rooms
+ * after the scan file, `${area}_${room}`. Never throws: without BIM data the
+ * viewer still works, there are just no planes.
+ */
+async function loadBimRoom(bimName: string): Promise<BimRoom | null> {
+  try {
+    const response = await fetch(BIM_DATA_URL);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const bim = findBimRoom(await response.json(), bimName);
+    if (!bim) {
+      console.warn(`[BIM] ${bimName} not found in ${BIM_DATA_URL}`);
+      return null;
+    }
+
+    if (!buildRoomLayout(bim)) console.warn(`[BIM] ${bimName}: walls do not close a room`);
+    return bim;
+  } catch (error) {
+    console.warn('[BIM] Failed to load plane data:', error);
+    return null;
+  }
+}
 
 // ============================================================================
 // CUSTOM HOOKS
@@ -62,7 +94,10 @@ function useKeyboardShortcuts(handlers: { onToggleHelp: () => void }) {
 /**
  * Manages plane visibility state with batch operations.
  */
-function usePlaneVisibility(showToast: (msg: string, type: 'success' | 'warning') => void) {
+function usePlaneVisibility(
+  planes: PlaneSpec[],
+  showToast: (msg: string, type: 'success' | 'warning') => void
+) {
   const [hiddenPlanes, setHiddenPlanes] = useState<Set<string>>(new Set());
   const [selectedPlane, setSelectedPlane] = useState<string | null>(null);
 
@@ -82,13 +117,13 @@ function usePlaneVisibility(showToast: (msg: string, type: 'success' | 'warning'
   }, [hiddenPlanes, showToast]);
 
   const toggleAllPlanes = useCallback((showAll: boolean) => {
-    const planeNames = DEFAULT_PLANES.map((p) => p.name);
+    const planeNames = planes.map((p) => p.name);
     setHiddenPlanes(showAll ? new Set() : new Set(planeNames));
     showToast(
       showAll ? 'All planes shown' : 'All planes hidden',
       showAll ? 'success' : 'warning'
     );
-  }, [showToast]);
+  }, [planes, showToast]);
 
   return {
     hiddenPlanes,
@@ -105,8 +140,8 @@ function usePlaneVisibility(showToast: (msg: string, type: 'success' | 'warning'
 function useDataLoader(showToast: (msg: string, type: 'success' | 'warning') => void) {
   const [loading, setLoading] = useState(false);
   const [modelUrl, setModelUrl] = useState<string | null>(null);
-  const [roomName, setRoomName] = useState('conferenceRoom_1');
   const [sceneObjects, setSceneObjects] = useState<SceneObject[]>([]);
+  const [bimRoom, setBimRoom] = useState<BimRoom | null>(null);
 
   useEffect(() => {
     async function initializeData() {
@@ -116,15 +151,17 @@ function useDataLoader(showToast: (msg: string, type: 'success' | 'warning') => 
         const source = dataSourceResolver.resolve();
         console.log(`[System] ${source.environment} mode | Source: ${source.baseUrl}`);
 
-        const room = await manifestLoader.loadRoom('Area_1', 'conferenceRoom_1');
+        const area = await manifestLoader.findRoomArea(ROOM);
+        const room = await manifestLoader.loadRoom(area, ROOM);
 
         setModelUrl(room.modelUrl);
-        setRoomName(room.name);
 
         const objects = await sceneObjectsLoader.load(room.objectsUrl);
         setSceneObjects(objects);
 
         console.log(`[BIM] Loaded ${objects.length} objects from ${room.objectsUrl}`);
+
+        setBimRoom(await loadBimRoom(`${area}_${room.name}`));
 
       } catch (error) {
         console.error('[System] Initialization failed:', error);
@@ -137,7 +174,7 @@ function useDataLoader(showToast: (msg: string, type: 'success' | 'warning') => 
     initializeData();
   }, [showToast]);
 
-  return { loading, setLoading, modelUrl, roomName, sceneObjects };
+  return { loading, setLoading, modelUrl, sceneObjects, bimRoom };
 }
 
 // ============================================================================
@@ -183,14 +220,19 @@ export default function Home() {
   // HOOKS
   // ──────────────────────────────────────────────────────────────────────────
   const { showToast } = useToast();
-  const { loading, setLoading, modelUrl, roomName, sceneObjects } = useDataLoader(showToast);
+  const { loading, setLoading, modelUrl, sceneObjects, bimRoom } = useDataLoader(showToast);
+  // Sizes for the sidebar; the overlay builds the same planes at the viewer's floor level
+  const planes = useMemo(() => {
+    const layout = bimRoom && buildRoomLayout(bimRoom);
+    return layout ? buildPlanes(layout) : [];
+  }, [bimRoom]);
   const {
     hiddenPlanes,
     selectedPlane,
     setSelectedPlane,
     togglePlane,
     toggleAllPlanes,
-  } = usePlaneVisibility(showToast);
+  } = usePlaneVisibility(planes, showToast);
 
   useKeyboardShortcuts({
     onToggleHelp: () => setIsHelpOpen((prev) => !prev),
@@ -238,7 +280,7 @@ export default function Home() {
             sceneObjects={sceneObjects}
             selectedObjectId={selectedObjectId}
             onObjectSelect={setSelectedObjectId}
-            planes={DEFAULT_PLANES}
+            planes={planes}
             hiddenPlanes={hiddenPlanes}
             onTogglePlane={togglePlane}
             onToggleAllPlanes={toggleAllPlanes}
@@ -308,7 +350,7 @@ export default function Home() {
           {modelUrl && (
             <Viewer3D
               fileUrl={modelUrl}
-              roomName={roomName}
+              bimRoom={bimRoom}
               onStatsUpdate={setStats}
               onLoadingChange={setLoading}
               isMeasuring={isMeasuring}

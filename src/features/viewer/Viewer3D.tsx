@@ -21,10 +21,11 @@ import { createSplatTexture } from './utils/textureUtils';
 
 // Types
 import { ViewerStats, HoverInfo, SceneObject } from '@/types';
+import type { BimRoom } from '@/features/bim/roomLayout';
 
 interface Viewer3DProps {
   fileUrl: string;
-  roomName?: string;  // For BIM overlay lookup
+  bimRoom?: BimRoom | null;  // bim_data.json entry for the BIM overlay
   onStatsUpdate: (stats: ViewerStats) => void;
   onLoadingChange: (loading: boolean) => void;
   isMeasuring: boolean;
@@ -41,7 +42,7 @@ interface Viewer3DProps {
 
 export function Viewer3D({
   fileUrl,
-  roomName,
+  bimRoom,
   onStatsUpdate,
   onLoadingChange,
   isMeasuring,
@@ -252,7 +253,7 @@ export function Viewer3D({
         </points>
       )}
       <SmartGhosts candidates={smartCandidates} measurementPoints={measurementPoints} />
-      {roomName && <BIMOverlay roomName={roomName} visible={showBIMPlanes} showLabels={showPlaneLabels} pointCloudBounds={pointCloudBounds} isMeasuring={isMeasuring} hiddenPlanes={hiddenPlanes} selectedPlane={selectedPlane} onTogglePlane={onTogglePlane} onBIMMeasuring={setBimMeasuring} />}
+      {bimRoom && <BIMOverlay bimRoom={bimRoom} visible={showBIMPlanes} showLabels={showPlaneLabels} pointCloudBounds={pointCloudBounds} isMeasuring={isMeasuring} hiddenPlanes={hiddenPlanes} selectedPlane={selectedPlane} onTogglePlane={onTogglePlane} onBIMMeasuring={setBimMeasuring} />}
       <GizmoHelper alignment="bottom-right" margin={[80, 80]}>
         <GizmoViewport axisColors={['#ef4444', '#22c55e', '#3b82f6']} labelColor="black" hideNegativeAxes />
       </GizmoHelper>

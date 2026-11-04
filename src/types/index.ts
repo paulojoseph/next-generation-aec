@@ -108,6 +108,7 @@ export interface ModelMetrics {
 
 /**
  * BIM plane metadata for sidebar display.
+ * Built from bim_data.json by src/features/bim/planes.ts (PlaneSpec).
  */
 export interface PlaneInfo {
   name: string;
@@ -165,17 +166,3 @@ export const CLASS_LABELS: Record<number, string> = {
   12: 'Clutter',
   13: 'Stairs',
 } as const;
-
-/**
- * Default plane definitions for conference room.
- */
-export const DEFAULT_PLANES: PlaneInfo[] = [
-  { name: 'Wall_Left', width: 4.38, height: 3.14 },
-  { name: 'Wall_Right', width: 4.38, height: 2.26 },
-  { name: 'Wall_Back', width: 5.02, height: 3.14 },
-  { name: 'Wall_Front', width: 5.02, height: 3.14 },
-  { name: 'Step_Wall', width: 4.38, height: 0.89 },
-  { name: 'Step_Ceiling', width: 2.98, height: 4.38, isHorizontal: true },
-  { name: 'Ceiling', width: 5.02, height: 4.38, isHorizontal: true },
-  { name: 'Floor', width: 5.02, height: 4.38, isHorizontal: true },
-];

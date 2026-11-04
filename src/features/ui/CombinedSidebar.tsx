@@ -1,21 +1,14 @@
 'use client';
 import { Layers, ChevronDown, ChevronUp, Minus, X, Box, Eye, EyeOff, RotateCcw, Pencil, EyeIcon } from 'lucide-react';
-import { SceneObject } from '@/types';
+import { SceneObject, PlaneInfo } from '@/types';
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { useToast } from '@/contexts/ToastContext';
-
-interface PlaneConfig {
-  name: string;
-  width: number;
-  height: number;
-  isHorizontal?: boolean;
-}
 
 interface CombinedSidebarProps {
   sceneObjects: SceneObject[];
   selectedObjectId: number | null;
   onObjectSelect: (id: number | null) => void;
-  planes: PlaneConfig[];
+  planes: PlaneInfo[];
   hiddenPlanes: Set<string>;
   onTogglePlane: (planeName: string) => void;
   onToggleAllPlanes?: (showAll: boolean) => void;

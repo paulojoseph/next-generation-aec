@@ -120,6 +120,36 @@ describe('ManifestLoader', () => {
     });
   });
 
+  describe('findRoomArea', () => {
+    beforeEach(() => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => mockManifest,
+      });
+    });
+
+    it('should return the area that contains the room', async () => {
+      expect(await loader.findRoomArea('conferenceRoom_1')).toBe('Area_1');
+      expect(await loader.findRoomArea('hallway_1')).toBe('Area_2');
+    });
+
+    it('should throw for a room in no area', async () => {
+      await expect(loader.findRoomArea('unknown_room')).rejects.toThrow(
+        'Room "unknown_room" not found in any area'
+      );
+    });
+
+    it('should throw when several areas have the room', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ ...mockManifest, Area_3: [mockManifest.Area_1[0]] }),
+      });
+      await expect(loader.findRoomArea('conferenceRoom_1')).rejects.toThrow(
+        'Room "conferenceRoom_1" is in several areas: Area_1, Area_3'
+      );
+    });
+  });
+
   describe('getAreas', () => {
     it('should return all area keys', async () => {
       mockFetch.mockResolvedValueOnce({
