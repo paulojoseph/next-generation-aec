@@ -412,13 +412,9 @@ NEXT_PUBLIC_DATA_SOURCE=https://your-bucket.s3.amazonaws.com/assets
 
 ---
 
-## License & Proprietary Notice
+## License
 
-Copyright (c) 2025 Paulo Marques. All Rights Reserved.
-
-**NOTICE:** This repository contains proprietary proof-of-concept code and architecture specifications. It is shared strictly for evaluation purposes regarding the "Founding Engineer" role.
-
-Unauthorized copying, commercial use, modification, or distribution of this code, via any medium, is strictly prohibited without express written permission from the author.
+[MIT](LICENSE) © 2025 Paulo Marques.
 
 ---
 
